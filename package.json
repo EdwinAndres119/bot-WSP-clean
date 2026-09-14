@@ -6,6 +6,7 @@
   "bin": "app.js",
   "scripts": {
     "start": "node app.js",
+    "web": "node server.js",
     "build": "pkg . --targets node22-win-x64 --output dist/BotWSP.exe"
   },
   "keywords": [],
@@ -18,8 +19,12 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.115.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
     "dotenv": "^17.2.3",
+    "express": "^5.2.1",
     "pm2": "^6.0.14",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.34.7"
   },

@@ -1,0 +1,62 @@
+const express = require('express');
+const cors = require('cors');
+
+const supabase = require('./src/db/SupabaseClient');
+const MessageRepository = require('./src/db/MessageRepository');
+const ExtractionRunRepository = require('./src/db/ExtractionRunRepository');
+const SessionManager = require('./src/wa/SessionManager');
+
+const PORT = process.env.PORT || 3001;
+
+// Sin login ni clave - instruccion directa del usuario (2026-09-14): la app
+// es solo para observar la extraccion, sin ningun tipo de registro/acceso
+// restringido. Pensada para correr en red interna, no expuesta a internet.
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const messageRepository = new MessageRepository(supabase);
+const extractionRunRepository = new ExtractionRunRepository(supabase);
+
+// Only one extraction runs at a time (one phone line being tested), so a
+// single module-level SessionManager is enough. /api/start replaces it with
+// a fresh instance each time so a new client isn't mixed with a dead one.
+let sessionManager = new SessionManager({ messageRepository, extractionRunRepository });
+
+app.post('/api/start', async (req, res) => {
+    const { lineLabel, monthsLimit, remoteDebugPort } = req.body;
+    if (!lineLabel) {
+        return res.status(400).json({ error: 'Falta lineLabel' });
+    }
+
+    try {
+        await sessionManager.stop();
+        sessionManager = new SessionManager({ messageRepository, extractionRunRepository });
+        await sessionManager.start({
+            lineLabel,
+            monthsLimit: monthsLimit ? Number(monthsLimit) : null,
+            remoteDebugPort: remoteDebugPort ? Number(remoteDebugPort) : null,
+        });
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(409).json({ error: err.message });
+    }
+});
+
+app.get('/api/status', (req, res) => {
+    res.json(sessionManager.getStatus());
+});
+
+app.post('/api/stop', async (req, res) => {
+    await sessionManager.stop();
+    res.json({ ok: true });
+});
+
+app.get('/api/runs', async (req, res) => {
+    const runs = await extractionRunRepository.listRecent();
+    res.json(runs);
+});
+
+app.listen(PORT, () => {
+    console.log(`API corriendo en http://localhost:${PORT}`);
+});

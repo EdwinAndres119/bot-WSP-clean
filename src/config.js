@@ -7,6 +7,7 @@ const CHAT_TIMEOUT_MS = parseInt(process.env.CHAT_TIMEOUT_MS || '300000', 10);
 const MEDIA_DIR = path.join(PROJECT_ROOT, 'media');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 module.exports = {
     PROJECT_ROOT,
@@ -15,4 +16,5 @@ module.exports = {
     MEDIA_DIR,
     SUPABASE_URL,
     SUPABASE_KEY,
+    ADMIN_PASSWORD,
 };

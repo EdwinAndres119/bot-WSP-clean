@@ -1,4 +1,4 @@
-const { cleanNumber, buildMessageId } = require('./identifiers');
+const { cleanNumber, buildMessageId, isSystemMessage } = require('./identifiers');
 
 class MessagePipeline {
     constructor({ contactResolver, mediaStorage, messageRepository }) {
@@ -10,6 +10,14 @@ class MessagePipeline {
     async process(msg, chatInfo) {
         if (!msg.id || !msg.id.id) {
             return; // internal WhatsApp notification without a real message id
+        }
+
+        if (isSystemMessage(msg.type)) {
+            return; // group creation/protocol events, not a real chat message
+        }
+
+        if (msg.from === 'status@broadcast' || msg.to === 'status@broadcast') {
+            return; // WhatsApp Status/Stories, not a conversation
         }
 
         const messageId = buildMessageId(msg.id);

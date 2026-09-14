@@ -21,4 +21,28 @@ function buildMessageId(msgId) {
     return `${msgId.fromMe}_${msgId.remote}_${msgId.id}${participant ? '_' + participant : ''}`;
 }
 
-module.exports = { cleanNumber, serializeIdPart, sanitizeFilename, buildMessageId };
+// WhatsApp system/protocol events (group creation, encryption notices, call
+// logs, etc.) come through with these types instead of real chat messages.
+const SYSTEM_MESSAGE_TYPES = [
+    'gp2',
+    'group_notification',
+    'notification',
+    'notification_template',
+    'e2e_notification',
+    'broadcast_notification',
+    'call_log',
+    'protocol',
+];
+
+function isSystemMessage(type) {
+    return SYSTEM_MESSAGE_TYPES.includes(type);
+}
+
+module.exports = {
+    cleanNumber,
+    serializeIdPart,
+    sanitizeFilename,
+    buildMessageId,
+    SYSTEM_MESSAGE_TYPES,
+    isSystemMessage,
+};

@@ -42,6 +42,14 @@ client.on('disconnected', (reason) => {
 let readyFired = false;
 let historyStarted = false;
 
+// Mientras corre historyExtractor.run(), los mensajes en vivo compiten por
+// la misma pagina de Puppeteer (downloadMedia, resolver contacto, etc.) con
+// las llamadas largas de sync del historico, lo que satura la pagina y la
+// cuelga o la crashea. Se encolan y se procesan despues, en vez de en
+// paralelo, para no perder mensajes ni competir por la pagina.
+let historyInProgress = true;
+const pendingLiveMessages = [];
+
 client.on('ready', async () => {
     readyFired = true;
     if (historyStarted) return;
@@ -54,10 +62,22 @@ client.on('ready', async () => {
     await new Promise((resolve) => setTimeout(resolve, READY_DELAY_MS));
 
     await historyExtractor.run((msg, chatInfo) => messagePipeline.process(msg, chatInfo));
+
+    historyInProgress = false;
+    console.log(`Procesando ${pendingLiveMessages.length} mensajes en vivo recibidos durante el historico...`);
+    for (const msg of pendingLiveMessages) {
+        await messagePipeline.process(msg);
+        await handleCommand(msg);
+    }
 });
 
 client.on('message', async (msg) => {
     console.log(`Mensaje de ${msg.from}: ${msg.body}`);
+
+    if (historyInProgress) {
+        pendingLiveMessages.push(msg);
+        return;
+    }
 
     await messagePipeline.process(msg);
     await handleCommand(msg);

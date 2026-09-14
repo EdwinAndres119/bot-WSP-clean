@@ -40,6 +40,16 @@ class MediaStorage {
             };
         } catch (err) {
             console.error('No se pudo descargar el multimedia:', err.message);
+
+            // These mean the underlying Puppeteer page/frame is dead, not
+            // that this one message's media failed - every subsequent
+            // download will fail identically until the caller stops.
+            // Rethrow so HistoryExtractor's per-chat catch can cut the loop
+            // short instead of burning through hundreds of messages/chats.
+            if (/Target closed|detached Frame|Session closed/.test(err.message)) {
+                throw err;
+            }
+
             return { ...EMPTY_RESULT, hasMedia: true };
         }
     }
