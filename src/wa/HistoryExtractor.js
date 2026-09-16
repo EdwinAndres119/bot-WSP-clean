@@ -32,6 +32,20 @@ function randomDelay() {
     });
 }
 
+// A chat with 0 messages is NOT a failure (fetchMessages succeeded fine) -
+// it's a distinct outcome from an error, so it needs its own reason instead
+// of being lumped into failedChats.
+function describeEmptyReason(diagnostics) {
+    if (diagnostics.stoppedByMonthsLimit) return 'Sin mensajes dentro del rango de meses';
+    if (diagnostics.ranOutOfLocalCache && diagnostics.endOfHistoryTransferType !== 0) {
+        return `Bloqueado por WhatsApp, sin historial disponible (endOfHistoryTransferType=${diagnostics.endOfHistoryTransferType})`;
+    }
+    if (diagnostics.ranOutOfLocalCache && diagnostics.endOfHistoryTransferType === 0) {
+        return 'WhatsApp no devolvio historial al pedirselo al telefono';
+    }
+    return 'Chat sin mensajes';
+}
+
 class HistoryExtractor {
     // monthsLimit: stop paginating a chat's history once its oldest loaded
     // message crosses this many months back (null = no cutoff, same as
@@ -165,11 +179,13 @@ class HistoryExtractor {
     async run(onMessage, onProgress) {
         const chats = await this.listChats();
         console.log(`${chats.length} chats encontrados.`);
-        if (onProgress) onProgress({ chatsFound: chats.length, processed: 0, failed: 0, saved: 0 });
+        if (onProgress) onProgress({ chatsFound: chats.length, processed: 0, failed: 0, saved: 0, failedChats: [], emptyChats: [] });
 
         let processed = 0;
         let failed = 0;
         let saved = 0;
+        const failedChats = [];
+        const emptyChats = [];
 
         for (const chat of chats) {
             if (!this.client.pupPage || this.client.pupPage.isClosed()) {
@@ -180,6 +196,8 @@ class HistoryExtractor {
             try {
                 const chatInfo = { name: chat.name, isGroup: chat.id.endsWith('@g.us') };
                 const { messages, diagnostics } = await withTimeout(this.fetchMessages(chat.id), config.CHAT_TIMEOUT_MS);
+
+                console.log(`"${chat.name || chat.id}": ${messages.length} mensajes encontrados.`);
 
                 if (diagnostics.ranOutOfLocalCache) {
                     console.log(
@@ -192,12 +210,21 @@ class HistoryExtractor {
                     console.log(`[monthsLimit] "${chat.name || chat.id}": corto por limite de meses, ${messages.length} mensajes dentro del rango.`);
                 }
 
+                if (messages.length === 0) {
+                    emptyChats.push({
+                        chatId: chat.id,
+                        chatName: chat.name || chat.id,
+                        reason: describeEmptyReason(diagnostics),
+                    });
+                }
+
                 for (const msg of messages) {
                     await onMessage(msg, chatInfo);
                     saved++;
                 }
             } catch (err) {
                 failed++;
+                failedChats.push({ chatId: chat.id, chatName: chat.name || chat.id, error: err.message });
                 console.error(`Error al extraer "${chat.name || chat.id}":`, err.message);
             }
 
@@ -206,14 +233,21 @@ class HistoryExtractor {
             processed++;
             if (processed % PROGRESS_INTERVAL === 0) {
                 console.log(`Progreso: ${processed}/${chats.length} chats, ${saved} mensajes guardados.`);
-                if (onProgress) onProgress({ chatsFound: chats.length, processed, failed, saved });
+                if (onProgress) onProgress({ chatsFound: chats.length, processed, failed, saved, failedChats, emptyChats });
             }
         }
 
-        console.log(`Extraccion historica completa: ${saved} mensajes (${failed} chats con error).`);
-        if (onProgress) onProgress({ chatsFound: chats.length, processed, failed, saved, done: true });
+        console.log(`Extraccion historica completa: ${saved} mensajes (${failed} chats con error, ${emptyChats.length} chats sin mensajes).`);
+        if (onProgress) onProgress({ chatsFound: chats.length, processed, failed, saved, failedChats, emptyChats, done: true });
 
-        return { chatsFound: chats.length, chatsProcessed: processed, chatsFailed: failed, messagesSaved: saved };
+        return {
+            chatsFound: chats.length,
+            chatsProcessed: processed,
+            chatsFailed: failed,
+            messagesSaved: saved,
+            failedChats,
+            emptyChats,
+        };
     }
 }
 

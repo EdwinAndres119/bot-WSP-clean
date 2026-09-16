@@ -1,5 +1,3 @@
-const fs = require('fs');
-const path = require('path');
 const qrcode = require('qrcode');
 const createWhatsAppClient = require('./client');
 const HistoryExtractor = require('./HistoryExtractor');
@@ -10,21 +8,8 @@ const config = require('../config');
 
 const READY_DELAY_MS = 5000;
 
-// Lines with no phone/SIM left to scan a fresh QR get their session from a
-// copy of an already-authenticated desktop Chrome profile instead (see
-// client.js and the plan, 2026-09-14). Convention: drop the copied
-// "User Data" folder under perfiles-recuperados/<clientId>/User Data - if
-// it's there, that line reconnects without a QR automatically, no frontend
-// change needed.
-const REUSE_PROFILES_DIR = path.join(config.PROJECT_ROOT, 'perfiles-recuperados');
-
 function sanitizeClientId(lineLabel) {
     return lineLabel.replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-function getReuseProfilePathFor(clientId) {
-    const profilePath = path.join(REUSE_PROFILES_DIR, clientId, 'User Data');
-    return fs.existsSync(profilePath) ? profilePath : null;
 }
 
 // Drives a single WhatsApp extraction run at a time (one phone line), for
@@ -46,7 +31,7 @@ class SessionManager {
         this.lineLabel = null;
         this.monthsLimit = null;
         this.runId = null;
-        this.progress = { chatsFound: 0, processed: 0, failed: 0, saved: 0 };
+        this.progress = { chatsFound: 0, processed: 0, failed: 0, saved: 0, failedChats: [], emptyChats: [] };
         this.errorMessage = null;
     }
 
@@ -62,7 +47,7 @@ class SessionManager {
         };
     }
 
-    async start({ lineLabel, monthsLimit, remoteDebugPort }) {
+    async start({ lineLabel, monthsLimit }) {
         if (this.state !== 'idle' && this.state !== 'completed' && this.state !== 'error') {
             throw new Error('Ya hay una extraccion en curso. Esperá a que termine para iniciar otra.');
         }
@@ -73,46 +58,17 @@ class SessionManager {
         this.state = 'starting';
 
         const clientId = sanitizeClientId(lineLabel);
-        // remoteDebugPort (line with no phone: connect to an already-open,
-        // already-logged-in Chrome) takes priority if given explicitly -
-        // reuseProfilePath auto-detection is the older, unreliable fallback.
-        const reuseProfilePath = remoteDebugPort ? null : getReuseProfilePathFor(clientId);
 
-        // Not awaited - see the comment on _connectWithRetries for why.
-        this._connectWithRetries({ clientId, reuseProfilePath, remoteDebugPort }).catch((err) => {
+        // Not awaited - start() itself isn't awaited by the API route, so the
+        // endpoint returns right away for the frontend to poll getStatus().
+        this._buildAndInitClient({ clientId }).catch((err) => {
             this.state = 'error';
             this.errorMessage = err.message;
         });
     }
 
-    // Reused-profile clients (lines without a phone to scan a fresh QR) race
-    // whatsapp-web.js's page injection against WhatsApp's own internal
-    // redirect: since the session is already authenticated, the page jumps
-    // straight to the chat UI with none of the pause a QR-scan flow naturally
-    // has, and "Execution context was destroyed" is a transient failure from
-    // that race - confirmed by testing on 2026-09-14 (failed twice in a row,
-    // once on a corrupted profile copy and once on a freshly re-copied one,
-    // both against the same error). Retrying with a brand new browser/client
-    // resolves it in practice. QR-flow clients don't hit this race, so only
-    // retry when reusing a profile.
-    async _connectWithRetries({ clientId, reuseProfilePath, remoteDebugPort }) {
-        const maxAttempts = reuseProfilePath ? 3 : 1;
-        const RETRY_DELAY_MS = 2000;
-
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                await this._buildAndInitClient({ clientId, reuseProfilePath, remoteDebugPort });
-                return;
-            } catch (err) {
-                const isRaceError = /Execution context was destroyed/.test(err.message);
-                if (!isRaceError || attempt === maxAttempts) throw err;
-                await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-            }
-        }
-    }
-
-    async _buildAndInitClient({ clientId, reuseProfilePath, remoteDebugPort }) {
-        this.client = createWhatsAppClient({ clientId, reuseProfilePath, remoteDebugPort });
+    async _buildAndInitClient({ clientId }) {
+        this.client = createWhatsAppClient({ clientId });
         const contactResolver = new ContactResolver(this.client);
         const mediaStorage = new MediaStorage(config.MEDIA_DIR);
         const messagePipeline = new MessagePipeline({
@@ -191,6 +147,8 @@ class SessionManager {
                     chatsProcessed: result.chatsProcessed,
                     chatsFailed: result.chatsFailed,
                     messagesSaved: result.messagesSaved,
+                    failedChats: result.failedChats,
+                    emptyChats: result.emptyChats,
                 });
             } catch (err) {
                 this.state = 'error';
@@ -200,6 +158,8 @@ class SessionManager {
                     chatsProcessed: this.progress.processed,
                     chatsFailed: this.progress.failed,
                     messagesSaved: this.progress.saved,
+                    failedChats: this.progress.failedChats,
+                    emptyChats: this.progress.emptyChats,
                     errorMessage: err.message,
                 });
             }

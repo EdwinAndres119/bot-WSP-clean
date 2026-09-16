@@ -5,6 +5,7 @@ const supabase = require('./src/db/SupabaseClient');
 const MessageRepository = require('./src/db/MessageRepository');
 const ExtractionRunRepository = require('./src/db/ExtractionRunRepository');
 const SessionManager = require('./src/wa/SessionManager');
+const { toCsv } = require('./src/utils/csv');
 
 const PORT = process.env.PORT || 3001;
 
@@ -24,7 +25,7 @@ const extractionRunRepository = new ExtractionRunRepository(supabase);
 let sessionManager = new SessionManager({ messageRepository, extractionRunRepository });
 
 app.post('/api/start', async (req, res) => {
-    const { lineLabel, monthsLimit, remoteDebugPort } = req.body;
+    const { lineLabel, monthsLimit } = req.body;
     if (!lineLabel) {
         return res.status(400).json({ error: 'Falta lineLabel' });
     }
@@ -35,7 +36,6 @@ app.post('/api/start', async (req, res) => {
         await sessionManager.start({
             lineLabel,
             monthsLimit: monthsLimit ? Number(monthsLimit) : null,
-            remoteDebugPort: remoteDebugPort ? Number(remoteDebugPort) : null,
         });
         res.json({ ok: true });
     } catch (err) {
@@ -55,6 +55,34 @@ app.post('/api/stop', async (req, res) => {
 app.get('/api/runs', async (req, res) => {
     const runs = await extractionRunRepository.listRecent();
     res.json(runs);
+});
+
+// Exporta los mensajes guardados a CSV para que el equipo de negocio los
+// pueda abrir en Excel. Sin runId exporta toda la tabla; con runId, solo los
+// mensajes guardados durante esa corrida especifica (por fetched_at).
+app.get('/api/export', async (req, res) => {
+    const { runId } = req.query;
+    let from;
+    let to;
+    let lineLabel;
+
+    if (runId) {
+        const run = await extractionRunRepository.getById(Number(runId));
+        if (!run) {
+            return res.status(404).json({ error: 'Corrida no encontrada' });
+        }
+        from = run.started_at;
+        to = run.finished_at || new Date().toISOString();
+        lineLabel = run.line_label;
+    }
+
+    const rows = await messageRepository.listForExport({ from, to });
+    const csv = toCsv(rows);
+    const filenameParts = ['mensajes', lineLabel, runId ? `run${runId}` : null].filter(Boolean);
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filenameParts.join('_')}.csv"`);
+    res.send(csv);
 });
 
 app.listen(PORT, () => {

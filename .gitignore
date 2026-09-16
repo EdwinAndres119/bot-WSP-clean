@@ -7,3 +7,5 @@ media/
 dist/
 .agents/
 .claude
+postman/
+.postman/

@@ -30,15 +30,31 @@ class ExtractionRunRepository {
         }
     }
 
-    async finish(runId, { status, chatsProcessed, chatsFailed, messagesSaved, errorMessage }) {
+    async finish(runId, { status, chatsProcessed, chatsFailed, messagesSaved, failedChats, emptyChats, errorMessage }) {
         await this.update(runId, {
             status,
             chats_processed: chatsProcessed,
             chats_failed: chatsFailed,
             messages_saved: messagesSaved,
+            failed_chats: failedChats || [],
+            empty_chats: emptyChats || [],
             error_message: errorMessage || null,
             finished_at: new Date().toISOString(),
         });
+    }
+
+    async getById(runId) {
+        const { data, error } = await this.supabase
+            .from('extraction_runs')
+            .select('*')
+            .eq('id', runId)
+            .single();
+
+        if (error) {
+            console.error('Error al buscar extraction_run:', error.message);
+            return null;
+        }
+        return data;
     }
 
     async listRecent(limit = 50) {
