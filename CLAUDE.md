@@ -92,6 +92,31 @@ No existe `003_users.sql` a propósito — existía cuando el proyecto tenía lo
 9. **`monthsLimit` cuenta meses de calendario reales, no `meses * 30 días`** (`monthsAgoTimestamp()` en `HistoryExtractor.js`, 2026-09-17). La aproximación vieja de 30 días recortaba la ventana ~4 días de más a 6 meses (y peor cuanto mayor el rango), dejando afuera chats cuya última actividad caía en ese hueco — confirmado con un caso real (chat con último mensaje el 20/3 que quedaba fuera de un corte del 21/3). El corte se calcula **una sola vez por corrida** (antes se recalculaba por chat, así que en una corrida larga se iba corriendo solo). Al arrancar, el log imprime la fecha de corte exacta: `[monthsLimit] 6 meses -> se guardan mensajes desde YYYY-MM-DD en adelante.`
 10. **El CSV de `/api/export` se manda con BOM UTF-8** (`'﻿' + csv` en `server.js`). Sin el BOM, Excel adivina mal la codificación y rompe tildes/emojis al abrir el archivo — y Excel Online ni siquiera ofrece el asistente de importación para corregirlo. No lo saques.
 
+## Primera corrida completa de punta a punta (2026-09-17, runId 29)
+
+Linea "3014051196-final", 6 meses, con todos los arreglos del dia aplicados. **Termino en `completed`**, la
+primera del dia que llega al final sin morirse ni necesitar intervencion:
+
+| | Resultado |
+|---|---|
+| Chats procesados | **512 de 512 (100%)** |
+| Mensajes guardados | 100 |
+| Chats fallidos | 5 (todos timeouts de Cuenta de empresa, ver seccion siguiente) |
+| Crashes de pagina | 0 |
+
+Desglose de los 407 chats sin mensajes — **ninguno es un error**, y conviene tenerlo a mano porque es la
+pregunta que hace el area de negocio al ver el Excel:
+- **277** "Sin mensajes dentro del rango de meses" → el chat existe pero su ultima actividad es anterior al
+  corte. Verificado a mano contra WhatsApp Web en varios casos: correcto.
+- **115 + 12** "Bloqueado por WhatsApp" (`endOfHistoryTransferType` 2 / undefined) → limite de la plataforma,
+  ver "Cosas ya resueltas" #1. Baja bastante si se repite la corrida con la sesion ya madura.
+- **3** "WhatsApp no devolvio historial al pedirselo al telefono".
+
+Contexto util para leer estos numeros: con `monthsLimit` los chats se procesan del mas antiguo al mas
+reciente, asi que `saved` se queda en 0 durante buena parte de la corrida y recien despega al cruzar la fecha
+de corte. En esta corrida el primer mensaje entro recien en el chat ~380 de 512. **Eso es normal, no es un
+bug** — antes de investigar un `saved: 0`, mirar el desglose de `emptyChats`.
+
 ## Pendiente de mayor impacto: los chats de "Cuenta de empresa" cuelgan la extraccion
 
 Hallazgo del 2026-09-17, confirmado 3 de 3 contra WhatsApp Web real: **cada vez que una corrida se frena
