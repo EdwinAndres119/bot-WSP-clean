@@ -33,7 +33,7 @@ class MessagePipeline {
 
         await this.messageRepository.save({
             id: messageId,
-            chat_id: cleanNumber(msg.from),
+            chat_id: cleanNumber(msg.fromMe ? msg.to : msg.from),
             chat_name: chat.name || null,
             is_group: chat.isGroup || false,
             remitente_numero: sender.number,
@@ -53,10 +53,19 @@ class MessagePipeline {
     async _resolveChat(msg, chatInfo) {
         if (chatInfo) return chatInfo;
 
+        // Live messages (no chatInfo, unlike history which always passes it -
+        // see HistoryExtractor.js) used to rely entirely on msg.getChat(),
+        // which fails silently here often enough that every live message
+        // ended up with an empty chat_name and is_group stuck at false. A
+        // group/individual chat is always decidable from msg.from itself -
+        // resolve that without needing a page round trip, and only use
+        // getChat() as a best-effort attempt at the display name.
+        const isGroup = msg.from.endsWith('@g.us');
         try {
-            return await msg.getChat();
+            const chat = await msg.getChat();
+            return { name: chat.name, isGroup: chat.isGroup ?? isGroup };
         } catch (err) {
-            return {};
+            return { name: null, isGroup };
         }
     }
 }

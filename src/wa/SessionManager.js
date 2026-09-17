@@ -6,7 +6,14 @@ const MediaStorage = require('./MediaStorage');
 const MessagePipeline = require('./MessagePipeline');
 const config = require('../config');
 
-const READY_DELAY_MS = 5000;
+// El primer chat que se procesa tras 'ready' suele ser el mas reciente/pesado
+// de la cuenta (historial completo + sendPeerDataOperationRequest) - con solo
+// 5s de margen, la pagina viene crasheando de forma reproducible justo en ese
+// primer chat ("Protocol error ... Target closed", sin llegar siquiera a
+// downloadMedia). Subido a 15s para darle mas tiempo a WhatsApp Web de
+// terminar de asentar sus propias conexiones internas antes de la carga
+// inicial mas pesada.
+const READY_DELAY_MS = 15000;
 
 function sanitizeClientId(lineLabel) {
     return lineLabel.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -136,6 +143,20 @@ class SessionManager {
                     },
                 );
 
+                // A dead Puppeteer page (see HistoryExtractor's
+                // isPageDeadError) can't be recovered reliably from inside
+                // this same process - reconnecting the client in-process was
+                // tried and never once completed in real testing. Ending the
+                // run here is the known-working path: restarting `npm run
+                // web` and starting this same lineLabel again picks up
+                // fine, reusing the LocalAuth session on disk (no new QR).
+                if (result.crashed) {
+                    throw new Error(
+                        `La pagina de Chrome se cayo durante la extraccion (${result.remainingChats.length} chats sin procesar). `
+                        + 'Reinicia el servidor (npm run web) y volve a arrancar la extraccion con la misma linea para continuar sin pedir QR.'
+                    );
+                }
+
                 historyInProgress = false;
                 for (const msg of pendingLiveMessages) {
                     await messagePipeline.process(msg);
@@ -153,6 +174,18 @@ class SessionManager {
             } catch (err) {
                 this.state = 'error';
                 this.errorMessage = err.message;
+
+                // Without this, a crashed browser stays alive holding the
+                // LocalAuth SingletonLock - the next /api/start for this same
+                // lineLabel fails with "browser already running" until
+                // someone kills the orphan process by hand.
+                const crashedProcess = this.client?.pupBrowser?.process();
+                await this.client?.destroy().catch(() => {});
+                if (crashedProcess && !crashedProcess.killed) {
+                    crashedProcess.kill('SIGKILL');
+                    await new Promise((resolve) => setTimeout(resolve, 2000));
+                }
+
                 await this.extractionRunRepository.finish(this.runId, {
                     status: 'error',
                     chatsProcessed: this.progress.processed,

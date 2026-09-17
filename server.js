@@ -7,6 +7,19 @@ const ExtractionRunRepository = require('./src/db/ExtractionRunRepository');
 const SessionManager = require('./src/wa/SessionManager');
 const { toCsv } = require('./src/utils/csv');
 
+// whatsapp-web.js dispara internamente un logout tras ciertos crashes de
+// pagina (Client.js, listener de 'framenavigated') que en Windows puede
+// chocar con un archivo bloqueado (EBUSY) del perfil de Chrome. Esa promesa
+// rechazada no la lanza nuestro codigo y no hay forma de envolverla en un
+// try/catch propio - sin este guard, tumba TODO el proceso de server.js
+// (no solo la extraccion en curso), aunque ya haya mensajes guardados.
+process.on('uncaughtException', (err) => {
+    console.error('[uncaughtException] El proceso siguio vivo:', err.message);
+});
+process.on('unhandledRejection', (err) => {
+    console.error('[unhandledRejection] El proceso siguio vivo:', err instanceof Error ? err.message : err);
+});
+
 const PORT = process.env.PORT || 3001;
 
 // Sin login ni clave - instruccion directa del usuario (2026-09-14): la app
@@ -82,7 +95,11 @@ app.get('/api/export', async (req, res) => {
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filenameParts.join('_')}.csv"`);
-    res.send(csv);
+    // El BOM le confirma a Excel que el archivo es UTF-8 - sin esto, Excel
+    // adivina mal la codificacion y rompe tildes/emojis al abrirlo directo,
+    // sin dar ninguna ventana para corregirlo (mas notorio todavia en Excel
+    // Online/web, que ni siquiera ofrece el asistente de importacion).
+    res.send('﻿' + csv);
 });
 
 app.listen(PORT, () => {

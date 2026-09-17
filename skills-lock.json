@@ -31,6 +31,12 @@
       "skillPath": "puppeteer-automation/SKILL.md",
       "computedHash": "a457e670ab106f4bcbc528941c754b751eab38819ec02133e727706c7e7c22f7"
     },
+    "supabase": {
+      "source": "supabase/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/supabase/SKILL.md",
+      "computedHash": "a6260582f48df8ba53380bb9b9e870ed2ae5fe147799e90ed783b8aa25167d50"
+    },
     "supabase-postgres-best-practices": {
       "source": "supabase/agent-skills",
       "sourceType": "github",
