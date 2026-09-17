@@ -92,6 +92,26 @@ No existe `003_users.sql` a propósito — existía cuando el proyecto tenía lo
 9. **`monthsLimit` cuenta meses de calendario reales, no `meses * 30 días`** (`monthsAgoTimestamp()` en `HistoryExtractor.js`, 2026-09-17). La aproximación vieja de 30 días recortaba la ventana ~4 días de más a 6 meses (y peor cuanto mayor el rango), dejando afuera chats cuya última actividad caía en ese hueco — confirmado con un caso real (chat con último mensaje el 20/3 que quedaba fuera de un corte del 21/3). El corte se calcula **una sola vez por corrida** (antes se recalculaba por chat, así que en una corrida larga se iba corriendo solo). Al arrancar, el log imprime la fecha de corte exacta: `[monthsLimit] 6 meses -> se guardan mensajes desde YYYY-MM-DD en adelante.`
 10. **El CSV de `/api/export` se manda con BOM UTF-8** (`'﻿' + csv` en `server.js`). Sin el BOM, Excel adivina mal la codificación y rompe tildes/emojis al abrir el archivo — y Excel Online ni siquiera ofrece el asistente de importación para corregirlo. No lo saques.
 
+## Pendiente de mayor impacto: los chats de "Cuenta de empresa" cuelgan la extraccion
+
+Hallazgo del 2026-09-17, confirmado 3 de 3 contra WhatsApp Web real: **cada vez que una corrida se frena
+~6 minutos y termina en `Runtime.callFunctionOn timed out`, el chat culpable es una "Cuenta de empresa"**
+(las que muestran *"Actualmente, esta empresa está usando un servicio seguro de Meta para administrar este
+chat"*). Casos verificados uno por uno: `573217431017`, `573053482199`, `573023538175`, y despues
+"Alpha Y Omega". El historial de esos chats no vive donde el de un chat normal, asi que la consulta dentro
+de la pagina nunca resuelve y se come el `protocolTimeout` entero (6 min) para no traer nada.
+
+**Por que importa**: las lineas que se van a extraer en produccion son comerciales, o sea que hablan con
+muchisimas cuentas de empresa (operadores, bancos, proveedores). Con 20 chats asi, una corrida pierde 2 horas
+en esperas inutiles. Es, de lejos, la mejora con mas impacto real pendiente.
+
+**Fix propuesto (no implementado todavia)**: envolver `loadEarlierMsgs()` en un timeout **dentro** del
+`pupPage.evaluate()` de `fetchMessages()` (un `Promise.race` con un `setTimeout` en contexto de navegador que
+resuelva `null`). Asi el evaluate siempre retorna con lo que tenga en vez de colgarse, sin importar el tipo de
+chat — y no hace falta detectar la cuenta de empresa ni cambiar la semantica del sync (sigue siendo UN solo
+`sendPeerDataOperationRequest` + polling paciente, ver "Cosas ya resueltas" #1). Un timeout de ~30s ahi
+convertiria 6 minutos perdidos en 30 segundos.
+
 ## Riesgo de seguridad — estado a confirmar
 
 Hasta el 2026-09-14, `SUPABASE_KEY` en `.env` era la clave **pública** (`sb_publishable_...`), por lo que RLS estaba desactivado en `mensajes`/`extraction_runs`/`users` (si se activara con esa clave y sin políticas, el propio backend se quedaría sin poder escribir). El 2026-09-16 se observó que la clave actual en `.env` **parece ser un JWT que decodifica a `"role":"service_role"`** — es decir, ya podría ser la clave secreta correcta. **No confirmado de punta a punta** (no se verificó activando RLS y probando una corrida real después). Antes de dar esto por resuelto: confirmar en el dashboard de Supabase (Project Settings → API) cuál es la clave `service_role` real y compararla con la del `.env`; si coincide, correr `004_enable_rls.sql` y probar una extracción completa para confirmar que el backend sigue pudiendo escribir.
