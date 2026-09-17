@@ -46,6 +46,11 @@ function monthsAgoTimestamp(months) {
     if (cutoff.getDate() !== dayOfMonth) {
         cutoff.setDate(0);
     }
+    // Medianoche y no la hora actual: si no, del dia del corte solo entrarian
+    // los mensajes posteriores a la hora en que se arranco la corrida, y se
+    // perderia casi todo ese dia sin que nadie lo note (visto en un caso real:
+    // un corte a las 17:52 dejaba afuera 18 horas del 17 de marzo).
+    cutoff.setHours(0, 0, 0, 0);
     return Math.floor(cutoff.getTime() / 1000);
 }
 
