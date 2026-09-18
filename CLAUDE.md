@@ -18,8 +18,8 @@ Este proyecto es **solo el backend**. El frontend vive aparte, en `Frontend_WSP`
 
 | Variable | Usada por | Qué poner |
 |---|---|---|
-| `SUPABASE_URL` | `src/db/SupabaseClient.js` | URL del proyecto Supabase (`https://<ref>.supabase.co`), Project Settings → API |
-| `SUPABASE_KEY` | `src/db/SupabaseClient.js` | La clave **`service_role`** (secreta) de Supabase, Project Settings → API → Project API keys. **No uses la clave `anon`/pública** — con esa, RLS bloquearía al propio backend (ver sección de seguridad más abajo). |
+| `SUPABASE_URL` | `src/db/SupabaseClient.js` | URL de la **API** de Supabase. En Supabase Cloud: `https://<ref>.supabase.co` (Project Settings → API). En la instancia self-hosted de la empresa: `http://digitalopsbsupabase.interactivo.com.co:8000` — **el `:8000` es obligatorio**, ver "Cosas ya resueltas" #14. |
+| `SUPABASE_KEY` | `src/db/SupabaseClient.js` | La clave `anon` de la instancia. Funciona **porque existen las políticas RLS** de `008_instalacion_empresa.sql` — sin ellas, RLS rechaza todo y el bot no puede escribir. La `service_role` también funcionaría (saltea RLS), pero se descartó a propósito: ver "Cosas ya resueltas" #13. |
 | `HISTORY_LIMIT` | `src/config.js` | `0` = sin límite de mensajes por chat (lo normal). Cualquier número > 0 limita cuántos mensajes trae por chat, sin importar `monthsLimit`. |
 | `CHAT_TIMEOUT_MS` | `src/config.js` | Opcional — si no está, usa `420000` (7 min) por defecto. No lo bajes de eso sin ver la nota en "Cosas ya resueltas" #2. |
 | `MEDIA_TIMEOUT_MS` | `src/config.js` | Opcional, default `60000` (1 min). Corte propio para `downloadMedia()`, que no se puede cancelar solo (ver "Cosas ya resueltas" #8). |
@@ -58,10 +58,29 @@ docs/arquitectura.md         # detalle técnico de los bugs de whatsapp-web.js y
 
 ### `db/schema/*.sql` — cuáles correr y en qué orden
 
+**Instalación nueva (lo normal a partir del 2026-09-18): correr SOLO `008_instalacion_empresa.sql`.**
+Es un único script idempotente (se puede correr dos veces sin romper nada) que hace todo de una: las dos
+tablas con sus índices, los GRANTs al rol `anon`, RLS prendido y las 6 políticas, más dos queries de
+verificación al final. Reemplaza a todos los scripts numerados de abajo — esos quedan solo como historia de
+cómo se llegó ahí. Es lo que se corrió en la Supabase de la empresa y lo que hay que correr en cualquier
+instancia nueva.
+
+Las dos queries del final tienen que devolver: `rls_prendido = true` en las dos tablas, y **6 políticas**
+(3 en `mensajes`, 3 en `extraction_runs`, todas `SELECT`/`INSERT`/`UPDATE`). Si no devuelven eso, el bot no
+va a poder escribir.
+
+<details>
+<summary>Scripts históricos (instalaciones viejas que se fueron migrando de a poco)</summary>
+
 1. `002_extraction_runs.sql` — tabla `extraction_runs` (historial de corridas). **Ya debería estar corrida.**
 2. `004_enable_rls.sql` — activa RLS en `mensajes`/`extraction_runs`/`users`. **Solo correr DESPUÉS de confirmar que `SUPABASE_KEY` es la clave `service_role`** (ver sección de seguridad). Nota: si la tabla `users` ya no existe en tu Supabase (se dejó de usar, ver más abajo), esa línea específica del script va a fallar — se puede correr solo las primeras dos líneas (`mensajes`/`extraction_runs`) si pasa eso.
 3. `005_failed_chats.sql` — agrega `failed_chats` (jsonb) a `extraction_runs`, para los chats que fallaron con error técnico real.
 4. `006_empty_chats.sql` — agrega `empty_chats` (jsonb) a `extraction_runs`, para los chats revisados bien pero sin mensajes (con motivo).
+
+5. `007_politicas_anon.sql` — GRANTs + RLS + las 6 políticas para el rol `anon`. Es el contenido de las
+   secciones 3 y 4 de `008` por separado, para una base que ya tenga las tablas creadas.
+
+</details>
 
 No existe `003_users.sql` a propósito — existía cuando el proyecto tenía login por cuentas, se borró el 2026-09-15 al sacar esa funcionalidad por completo (ver `.gitignore`/historial de commits). Si tu Supabase tiene una tabla `users` de esa época, ya no la usa nada del código actual — se puede dejar así o borrarla a mano, es indistinto.
 
@@ -94,6 +113,33 @@ No existe `003_users.sql` a propósito — existía cuando el proyecto tenía lo
 10. **El CSV de `/api/export` se manda con BOM UTF-8** (`'﻿' + csv` en `server.js`). Sin el BOM, Excel adivina mal la codificación y rompe tildes/emojis al abrir el archivo — y Excel Online ni siquiera ofrece el asistente de importación para corregirlo. No lo saques.
 11. **`fetched_at` se manda en CADA upsert, no solo en el insert** (`MessagePipeline.js`, 2026-09-17). Antes se dejaba que la columna se seteara sola por `default now()` y el payload del upsert no la incluía a propósito, para "preservar la primera vez que se vio el mensaje" — pero eso rompía el propósito real para el que existe esa columna: `GET /api/export?runId=N` la usa para saber qué mensajes entraron en una corrida puntual. Si una línea se prueba varias veces seguidas (algo que pasa todo el tiempo en desarrollo, y probablemente también en producción con re-extracciones), la mayoría de los mensajes de una corrida nueva **ya existían** de una corrida anterior — su `fetched_at` se quedaba con la fecha vieja, y el export de la corrida nueva salía **vacío** aunque `messages_saved` mostrara un número real. Confirmado en vivo contra Supabase: `runId=29` (100 guardados) exportaba 0 filas. Con el fix, `fetched_at` = "última vez que una corrida confirmó este mensaje", y el export por `runId` funciona siempre para corridas hechas después del fix. **No revertir a "solo en el insert"** — ese comportamiento parecía más prolijo pero rompe el export, que es justo para lo que se agregó la columna. Nada más en el código depende del valor original de "primera vez visto" (verificado con grep, `fetched_at` solo se usa en `MessageRepository.js` y `server.js`).
 12. **`GET /api/export/empty?runId=N` no puede "reparar" corridas viejas** (anteriores al fix de arriba): un mensaje que ya tenía `fetched_at` viejo antes del 2026-09-17 se queda así para siempre, no hay forma de saber retroactivamente qué corrida lo trajo. Esto es esperado, no hay que "arreglarlo" — solo avisarle al usuario que las corridas de prueba de hoy (`runId` 21 al 31 aprox.) van a exportar vacío o incompleto si las vuelven a pedir; las corridas de mañana en adelante van a andar bien.
+
+13. **El bot corre con la clave `anon`, no con `service_role` — y eso es a propósito** (2026-09-18). La
+    instancia de la empresa es compartida con otros sistemas, así que la `service_role` daba acceso total a
+    **toda** la base, no solo a las dos tablas del bot. Se acordó con el administrador (Sergio) la opción
+    acotada: clave `anon` + políticas RLS que la habilitan únicamente en `mensajes` y `extraction_runs`.
+    Puntos que hay que entender antes de tocar esto:
+    - **RLS es deny-by-default.** Prender RLS sin políticas no "asegura" la tabla, la deja inutilizable: el
+      bot deja de poder escribir. Los dos pasos van siempre juntos.
+    - **Los GRANTs son la otra mitad.** RLS decide *qué filas*, el GRANT decide *si la tabla es visible*. Sin
+      `grant insert on mensajes to anon`, las políticas ni se evalúan y da `permission denied for table`. En
+      Supabase Cloud los GRANTs vienen puestos por defecto; **en self-hosted no siempre**, por eso están
+      explícitos en el script.
+    - **Hacen falta INSERT *y* UPDATE**, porque el guardado es upsert por `id`. Con solo INSERT, la primera
+      corrida anda y la segunda falla.
+    - **No hay política de DELETE a propósito.** El bot nunca borra; un `DELETE` con esta clave es rechazado
+      por RLS. Verificado en vivo. Para borrar algo hay que entrar al Studio como admin.
+    - El trade-off aceptado: quien tenga la `anon` puede **leer** las conversaciones. Se consideró aceptable
+      porque la instancia solo es alcanzable por VPN interna. Si algún día se expone a internet, esta
+      decisión hay que revisarla.
+14. **La URL de la API de la Supabase self-hosted lleva `:8000`** (2026-09-18). El panel "Connect" del Studio
+    muestra la URL **sin el puerto**, y así no funciona: el puerto 80 sirve el Studio (devuelve HTML, por eso
+    el error era `Error al crear extraction_run: <!DOCTYPE HTML...>` — el cliente recibía una página web
+    donde esperaba JSON). El gateway Kong, que es el que expone la API REST, escucha en el **8000**. Además
+    hay un WAF adelante que bloquea requests sin User-Agent de navegador (`403 This transfer is blocked by a
+    Web Application Firewall`) — o sea que un `curl` pelado falla aunque la URL esté bien, pero el bot no,
+    porque `supabase-js` manda headers normales. **Si aparece un error donde la respuesta es HTML en vez de
+    JSON, lo primero a mirar es el puerto.**
 
 ## Primera corrida completa de punta a punta (2026-09-17, runId 29)
 
@@ -129,6 +175,19 @@ chat"*). Casos verificados uno por uno: `573217431017`, `573053482199`, `5730235
 "Alpha Y Omega". El historial de esos chats no vive donde el de un chat normal, asi que la consulta dentro
 de la pagina nunca resuelve y se come el `protocolTimeout` entero (6 min) para no traer nada.
 
+**Cuanto cuesta, medido** (2026-09-18, sobre la corrida completa de 512 chats descrita mas abajo):
+
+| Medida | Valor |
+|---|---|
+| Mediana por chat (el chat tipico) | **3,1 s** |
+| Promedio por chat | 14,1 s |
+| Corrida completa | 100 min |
+| Tiempo perdido en los 5 chats fallidos | **30 min (30% de la corrida)** |
+
+El promedio es casi 5 veces la mediana justamente por esto: el chat normal tarda 3 segundos, y cada Cuenta
+de empresa se come 6 minutos enteros para no devolver nada. Con el fix propuesto (cortar a los 30s) esos
+30 minutos pasarian a ~2,5, y la corrida de 100 min bajaria a ~72.
+
 **Por que importa**: las lineas que se van a extraer en produccion son comerciales, o sea que hablan con
 muchisimas cuentas de empresa (operadores, bancos, proveedores). Con 20 chats asi, una corrida pierde 2 horas
 en esperas inutiles. Es, de lejos, la mejora con mas impacto real pendiente.
@@ -140,9 +199,58 @@ chat — y no hace falta detectar la cuenta de empresa ni cambiar la semantica d
 `sendPeerDataOperationRequest` + polling paciente, ver "Cosas ya resueltas" #1). Un timeout de ~30s ahi
 convertiria 6 minutos perdidos en 30 segundos.
 
-## Riesgo de seguridad — estado a confirmar
+## Migración a la Supabase de la empresa (2026-09-18) — COMPLETA Y VERIFICADA
 
-Hasta el 2026-09-14, `SUPABASE_KEY` en `.env` era la clave **pública** (`sb_publishable_...`), por lo que RLS estaba desactivado en `mensajes`/`extraction_runs`/`users` (si se activara con esa clave y sin políticas, el propio backend se quedaría sin poder escribir). El 2026-09-16 se observó que la clave actual en `.env` **parece ser un JWT que decodifica a `"role":"service_role"`** — es decir, ya podría ser la clave secreta correcta. **No confirmado de punta a punta** (no se verificó activando RLS y probando una corrida real después). Antes de dar esto por resuelto: confirmar en el dashboard de Supabase (Project Settings → API) cuál es la clave `service_role` real y compararla con la del `.env`; si coincide, correr `004_enable_rls.sql` y probar una extracción completa para confirmar que el backend sigue pudiendo escribir.
+El bot dejó de escribir en la Supabase Cloud de prueba (`hlxmvyghqzsmeolcrngg.supabase.co`) y ahora escribe
+en la instancia self-hosted de la empresa. **No hubo migración de datos**: lo extraído antes se quedó en la
+base vieja, esto es un cambio de destino de acá en adelante.
+
+Estado final, todo verificado de punta a punta:
+
+| Paso | Estado |
+|---|---|
+| Tablas + índices creados (`008_instalacion_empresa.sql`) | ✅ |
+| GRANTs al rol `anon` | ✅ |
+| RLS prendido en las dos tablas | ✅ (`rowsecurity = true`) |
+| 6 políticas creadas | ✅ verificado con `pg_policies` |
+| Lectura desde el bot (`/api/runs`) | ✅ |
+| Escritura desde el bot (INSERT + UPDATE) | ✅ |
+| DELETE correctamente rechazado por RLS | ✅ |
+| Corrida completa de 512 chats | ✅ `completed` |
+| Export CSV de mensajes | ✅ 1178 líneas |
+| Export CSV de chats vacíos | ✅ 407 líneas |
+
+### La corrida de validación: idéntica a la de la base vieja
+
+Misma línea (`3014051196-final`), mismos 6 meses, bases distintas. Se corrió justamente para comprobar que
+el cambio de infraestructura no alteraba el comportamiento:
+
+| | Base vieja (runId 34) | **Base empresa (runId 2)** |
+|---|---|---|
+| Chats procesados | 512/512 | **512/512** |
+| Chats fallidos | 5 | **5** |
+| Mensajes guardados | 100 | **100** |
+| Crashes de página | 0 | **0** |
+| Duración | ~101 min | **100 min** |
+| Sin mensajes en el rango de meses | 277 | **277** |
+| Bloqueado por WhatsApp | 127 | **127** |
+| WhatsApp no devolvió historial | 3 | **3** |
+
+Que los siete números coincidan exactamente es la evidencia de que la migración no rompió nada, y de paso
+confirma que el bot es **determinista**: sobre la misma línea da el mismo resultado, no falla al azar.
+
+### Cosas a tener en cuenta de esta base
+
+- **La URL lleva `:8000`** — es el error más fácil de cometer, ver "Cosas ya resueltas" #14.
+- **Solo es alcanzable por VPN interna.** Desde afuera de la red no responde; si el bot no conecta, lo
+  primero a revisar es la VPN, no el código.
+- **La clave es `anon`, no `service_role`** — funciona gracias a las políticas, ver "Cosas ya resueltas" #13.
+- **El bot no puede borrar nada** (no hay política de DELETE). Quedó una fila basura de prueba
+  (`runId 1`, `prueba-conexion`, en estado `running` para siempre) que solo se puede borrar desde el Studio
+  con permisos de admin.
+- **Dos cosas que conviene avisarle al administrador**: (1) el panel "Connect" del Studio muestra la URL de
+  la API sin el puerto 8000, lo que confunde a cualquiera que quiera conectarse; (2) hay un WAF que bloquea
+  requests sin User-Agent de navegador, lo que hace que probar con `curl` falle aunque todo esté bien.
 
 ## Gotchas operativos
 
@@ -155,7 +263,44 @@ Hasta el 2026-09-14, `SUPABASE_KEY` en `.env` era la clave **pública** (`sb_pub
 - Un contador quieto **no** es un cuelgue: el progreso se publica cada 10 chats (`PROGRESS_INTERVAL`) y un solo chat puede tardar hasta 6-7 min si pega `protocolTimeout`. Para saber si está vivo de verdad, mirá si el log del server **sigue creciendo**, no el contador.
 - `saved: 0` con muchos chats procesados suele ser correcto, no un bug: con el orden invertido se procesan primero los chats más viejos, que normalmente caen fuera del `monthsLimit` (`"corto por limite de meses, 0 mensajes dentro del rango"`). Los datos reales aparecen en el tramo final. Antes de investigar, mirá el desglose de motivos en `emptyChats`.
 - Los chats vacíos/fallidos **sí quedan persistidos** en `extraction_runs` (`empty_chats` / `failed_chats`, jsonb) y se consultan por `/api/runs`, directo en Supabase, o por `GET /api/export/empty?runId=N` (solo vacíos, ver arriba) — pero **no salen en el CSV** de `/api/export`, que solo exporta la tabla `mensajes`. Si alguien de negocio pregunta "¿por qué este número no trajo nada?", esa respuesta está en el panel o en el CSV de vacíos, no en el Excel de mensajes.
-- El CSV se abre bien en **LibreOffice Calc** (muestra el asistente de importación solo): dejar `Unicode (UTF-8)` y **solo "Coma"** tildada como separador. Importante destildar "Punto y coma": el escapado del CSV solo entrecomilla campos con `,`/`"`/salto de línea, así que un `;` dentro de un mensaje partiría la fila en columnas de más. En Excel de escritorio hay que usar **Datos → Desde texto/CSV** (no doble clic).
+- El CSV se abre bien en **LibreOffice Calc** con `Archivo → Abrir` (Ctrl+O) — **no** con doble clic desde el explorador, que lo puede mandar a otro programa. Ahí sale solo el asistente "Importación de texto": dejar `Unicode (UTF-8)`, tildar **solo "Coma"** y destildar "Punto y coma"/"Tabulador"/"Espacio", con `"` como delimitador de texto. Destildar "Punto y coma" importa: el escapado del CSV solo entrecomilla campos con `,`/`"`/salto de línea, así que un `;` dentro de un mensaje partiría la fila en columnas de más. Recién con los datos ya cargados sirve el menú **Datos → Filtro automático** (Ctrl+Shift+L) para dejarlo usable por los asesores — con la hoja en blanco ese menú está casi todo gris, no es el camino para abrir el archivo. En Excel de escritorio el equivalente es **Datos → Desde texto/CSV** (tampoco doble clic).
+
+## Puesta en marcha en una PC de producción (checklist)
+
+Pensado para las 7 PCs. Cada una corre **su propia línea**, con su propia sesión de WhatsApp, escribiendo
+todas a la misma base de la empresa.
+
+1. **VPN conectada.** Sin eso la base no es alcanzable y nada funciona.
+2. `git clone` del repo + `npm install`.
+3. Crear el `.env` a mano (ver tabla de variables). Los tres valores mínimos son `SUPABASE_URL` (con
+   **:8000**), `SUPABASE_KEY` (la `anon`) y `HISTORY_LIMIT=0`.
+4. **No hace falta correr ningún SQL** — la base ya está preparada, es compartida por las 7 PCs. El script
+   `008` se corre una sola vez por base, no por máquina.
+5. `npm run web` y verificar `http://localhost:3001/api/status` → `{"state":"idle"}`.
+6. Abrir el panel, poner el nombre/número de la línea, elegir los meses, "Iniciar", escanear el QR.
+
+### Qué esperar de una corrida, para no confundir comportamiento normal con fallas
+
+| Lo que se ve | Qué significa |
+|---|---|
+| `saved: 0` durante gran parte de la corrida | **Normal.** Se procesa del chat más viejo al más nuevo; los mensajes aparecen en el tramo final. |
+| El contador quieto varios minutos | **Normal.** Se publica cada 10 chats, y un chat puede tardar hasta 6-7 min. Para saber si está vivo, mirar si el log crece. |
+| Chats "Bloqueado por WhatsApp" | **Límite de la plataforma**, no un bug. Baja si se repite la corrida con la sesión ya madura. |
+| Unos pocos chats fallidos con `Runtime.callFunctionOn timed out` | Cuentas de empresa. Esperable, ~5 cada 500 chats. |
+| La corrida termina en `error` | Se cortó por un crash de página. **No se pierde lo ya guardado.** Alcanza con darle "Iniciar" de nuevo a la misma línea — no pide QR, no duplica nada (upsert por `id`), pero **arranca desde el chat 1**. |
+| Se corre la misma línea 2-3 veces | Es el mecanismo normal para completar el historial, no un workaround. Cada pasada suele traer más. |
+
+### Lo que el sistema NO hace (decisiones tomadas, no pendientes)
+
+- **No tiene login ni autenticación** — decisión de negocio del 2026-09-14, pensado para red interna.
+- **No corre dos extracciones en paralelo** — una sola por PC, por diseño; arrancar una para la anterior.
+- **No retoma donde quedó** tras un corte: `/api/start` no tiene "resume", re-procesa todo desde el chat 1.
+- **No borra nada** de la base (no hay política de DELETE, ni código que borre).
+- **No exporta los chats fallidos a CSV** — solo los vacíos (`/api/export/empty`). Los fallidos se ven en el
+  panel o en la columna `failed_chats` de `extraction_runs`.
+- **No garantiza traer el 100% del historial**: WhatsApp bloquea parte de los chats por su cuenta.
+- **No puede eliminar del todo los crashes de página** — es un bug abierto de la librería, ver #8. Lo que sí
+  garantiza es fallar rápido, sin perder datos y sin pedir QR de nuevo.
 
 ## Migrar a otra máquina
 
@@ -163,7 +308,7 @@ Lo que **sí** viaja con `git clone` (todo lo demás en esta lista está en `.gi
 
 | Ruta gitignored | Qué es | Qué hacer en la máquina nueva |
 |---|---|---|
-| `.env` | Credenciales (Supabase, límites) | Crearlo a mano con los valores de la tabla de arriba (copiar los valores reales por un canal seguro, nunca por chat sin cifrar) |
+| `.env` | Credenciales (Supabase, límites) | Crearlo a mano con los valores de la tabla de arriba (copiar los valores reales por un canal seguro, nunca por chat sin cifrar). **Ojo al hacer respaldos**: `.gitignore` tiene solo `.env`, no `.env*` — un `.env.backup` al lado del original **no queda ignorado** y se puede commitear con las credenciales adentro. Los respaldos van fuera de la carpeta del repo. |
 | `node_modules/` | Dependencias npm | `npm install` |
 | `.wwebjs_auth/` | Sesión de WhatsApp por línea | Sin copiarla, cada línea va a pedir escanear QR de nuevo (no se pierde nada de lo ya extraído, eso vive en Supabase). Copiarla es técnicamente el mecanismo para el que está pensada `LocalAuth`, pero no está garantizado — no es lo mismo que "Cambio B" (que sí está descartado) |
 | `.wwebjs_cache/` | Caché interna de la librería | No hace falta, se regenera sola |
