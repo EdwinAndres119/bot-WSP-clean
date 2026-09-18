@@ -102,6 +102,28 @@ app.get('/api/export', async (req, res) => {
     res.send('﻿' + csv);
 });
 
+// Los chats vacios/fallidos no son mensajes, asi que nunca salen en
+// /api/export (esa solo exporta la tabla mensajes) - el equipo de negocio
+// los necesita igual para saber cuales chats revisar a mano, asi que se
+// exportan aparte, leyendo directo la columna empty_chats/failed_chats que
+// ya quedo persistida en extraction_runs al terminar la corrida.
+app.get('/api/export/empty', async (req, res) => {
+    const { runId } = req.query;
+    if (!runId) {
+        return res.status(400).json({ error: 'Falta runId' });
+    }
+
+    const run = await extractionRunRepository.getById(Number(runId));
+    if (!run) {
+        return res.status(404).json({ error: 'Corrida no encontrada' });
+    }
+
+    const csv = toCsv(run.empty_chats || []);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="chats_vacios_${run.line_label}_run${runId}.csv"`);
+    res.send('﻿' + csv);
+});
+
 app.listen(PORT, () => {
     console.log(`API corriendo en http://localhost:${PORT}`);
 });

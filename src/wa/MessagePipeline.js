@@ -47,6 +47,14 @@ class MessagePipeline {
             media_filename: media.filename,
             media_path: media.mediaPath,
             timestamp: new Date(msg.timestamp * 1000).toISOString(),
+            // Se manda en CADA upsert (no solo en el insert) para que refleje
+            // la ultima corrida que confirmo este mensaje. GET /api/export
+            // filtra por esto para saber que entro en una corrida puntual -
+            // si se preservara el valor original, un mensaje ya guardado de
+            // una prueba anterior desaparecia del export de la corrida nueva
+            // aunque esa corrida si lo haya vuelto a traer (bug real, visto
+            // en runId=29: 100 guardados, 0 en el CSV).
+            fetched_at: new Date().toISOString(),
         });
     }
 

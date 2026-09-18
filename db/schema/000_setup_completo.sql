@@ -45,10 +45,13 @@ create table if not exists public.mensajes (
     -- ya la manda asi — no renombrar sin cambiar MessagePipeline.js.
     timestamp timestamptz,
 
-    -- Cuando lo guardo el bot. Se setea SOLO en el insert: el payload del
-    -- upsert no la incluye, asi que un mensaje que ya existia conserva su
-    -- valor original. Es lo que usa GET /api/export?runId=N para saber que
-    -- mensajes entraron en cada corrida.
+    -- Ultima vez que una corrida confirmo este mensaje. MessagePipeline.js
+    -- lo manda en CADA upsert (no solo insert) a proposito: si solo se
+    -- seteara en el insert, un mensaje ya guardado de una corrida vieja
+    -- desaparecia del export de una corrida nueva aunque esta lo hubiera
+    -- vuelto a traer (bug real, visto en runId=29 el 2026-09-17). Es lo que
+    -- usa GET /api/export?runId=N para saber que mensajes entraron en cada
+    -- corrida.
     fetched_at timestamptz not null default now()
 );
 
